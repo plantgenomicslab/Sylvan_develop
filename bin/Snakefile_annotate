@@ -610,7 +610,7 @@ rule STAR_paired:
 	output: temp(f"{RESULTS_DIR}GETA/STAR/paired/STAR_paired.{{run}}.bam")
 	threads: config_dict["STAR_paired"]["threads"]
 	params:
-		threads_half = config_dict["HiSat2_PAIRED"]["threads"] // 2,
+		threads_half = lambda wildcards, threads: max(1, threads // 2),
 		results_dir = RESULTS_DIR
 	shell: """ 
 			micromamba activate alignment
@@ -655,7 +655,7 @@ rule STAR_single:
 	output: temp(f"{RESULTS_DIR}GETA/STAR/single/STAR_single.{{run}}.bam")
 	threads: config_dict["STAR_single"]["threads"]
 	params:
-		threads_half = config_dict["HiSat2_PAIRED"]["threads"] // 2,
+		threads_half = lambda wildcards, threads: max(1, threads // 2),
 		results_dir = RESULTS_DIR
 	shell: """
 		micromamba activate alignment
@@ -2925,14 +2925,19 @@ rule helixer:
 		    echo "[helixer] Using CPU (helixer_device={params.device}; slower but functional)." >&2
 		    export CUDA_VISIBLE_DEVICES=-1
 		fi
-		if [ -n "{params.model_dir}" ]; then
-		    MODEL_ARG="--model-filepath {params.model_dir}/{params.l}.h5"
-		else
-		    MODEL_ARG="--lineage {params.l}"
+		MODEL_FILE="{params.model_dir}/{params.l}.h5"
+		if [ ! -r "$MODEL_FILE" ] || [ ! -s "$MODEL_FILE" ]; then
+		    echo "ERROR: Helixer model is missing or unreadable: $MODEL_FILE" >&2
+		    echo "For land_plant, run bash bin/fetch_helixer_model.sh models; set Input.helixer_model_dir and bind that directory." >&2
+		    exit 1
 		fi
+		# Detect HTML/LFS pointers or corrupt downloads before neural inference.
+		python -c 'import h5py,sys; f=h5py.File(sys.argv[1], "r"); f.close()' "$MODEL_FILE"
+		sha256sum "$MODEL_FILE"
+		MODEL_ARG=(--model-filepath "$MODEL_FILE")
 		Helixer.py \
 		  --fasta-path {input.g} \
-		  $MODEL_ARG \
+		  "${{MODEL_ARG[@]}}" \
 		  --subsequence-length {params.subseq} \
 		  --gff-output-path {output}
 		# Fail loudly if Helixer produced no usable output (no silent empty-file fallback).
@@ -3349,9 +3354,23 @@ def aggregate_psiclass_bins(wildcards):
 	binids = glob_wildcards(os.path.join(ckpt, "bin_{binid}.bam")).binid
 	return expand(f"{RESULTS_DIR}TRANSCRIPT/PsiClass/bins/{{binid}}/psi_vote.gtf", binid=binids)
 
+def aggregate_psiclass_splice(wildcards):
+	ckpt = checkpoints.prepPsiClass_STAR.get().output[0]
+	binids = glob_wildcards(os.path.join(ckpt, "bin_{binid}.bam")).binid
+	return expand(f"{RESULTS_DIR}TRANSCRIPT/PsiClass/bins/{{binid}}/splice/psi_bam.trusted_splice", binid=binids)
+
+rule merge_psiclass_splice:
+	input: aggregate_psiclass_splice
+	output: f"{RESULTS_DIR}TRANSCRIPT/PsiClass/splice/psiclass.STAR_bam.trusted_splice"
+	shell: """
+		python3 {workflow.basedir}/merge_trusted_splice.py --output {output:q} {input:q}
+		"""
+
 rule psiClass_bin:
 	input:  f"{RESULTS_DIR}TRANSCRIPT/PsiClass/splitBam/bin_{{binid}}.bam"
-	output: f"{RESULTS_DIR}TRANSCRIPT/PsiClass/bins/{{binid}}/psi_vote.gtf"
+	output:
+		vote = f"{RESULTS_DIR}TRANSCRIPT/PsiClass/bins/{{binid}}/psi_vote.gtf",
+		splice = f"{RESULTS_DIR}TRANSCRIPT/PsiClass/bins/{{binid}}/splice/psi_bam.trusted_splice"
 	threads: config_dict["psiClass_bin"]["threads"]
 	params:
 		results_dir = RESULTS_DIR,
@@ -3375,7 +3394,9 @@ rule psiClass_bin:
 		# track for that run, and those regions are still covered by the
 		# stringtie / transfrag / miniprot / liftoff / ab-initio tracks feeding
 		# EVM. failed_bins.txt is the audit trail -- report it in methods.
-		if [ "$(samtools view -c $bindir/filtered.bam)" -gt 0 ]; then
+		rc=0
+		nreads=$(samtools view -c $bindir/filtered.bam)
+		if [ "$nreads" -gt 0 ]; then
 			{params.psiclass_bin} -b $bindir/filtered.bam -o $bindir/psi -p {threads} -c 0.05 && rc=0 || rc=$?
 			if [ "$rc" -ne 0 ]; then
 				echo "psiClass_bin: psiclass failed on {wildcards.binid} (exit $rc) -- emitting empty vote" >&2
@@ -3390,7 +3411,16 @@ rule psiClass_bin:
 			sed -i -E 's/gene_id "([^"]*)"/gene_id "{wildcards.binid}.\\1"/g; s/transcript_id "([^"]*)"/transcript_id "{wildcards.binid}.\\1"/g' $bindir/psi_vote.gtf
 		fi
 		# psiclass writes psi_vote.gtf on success; an empty bin (no reads/transcripts) has none.
-		[ -f {output} ] || : > {output}
+		[ -f {output.vote} ] || : > {output.vote}
+		# Junction evidence is a declared output. Empty/failed bins follow the
+		# existing partial-assembly policy; a successful nonempty bin must produce it.
+		if [ "$nreads" -eq 0 ] || [ "$rc" -ne 0 ]; then
+			mkdir -p $bindir/splice
+			: > {output.splice}
+		elif [ ! -f {output.splice} ]; then
+			echo "psiClass_bin: missing junction output {output.splice}" >&2
+			exit 1
+		fi
 		rm -f $bindir/filtered.bam
 		"""
 
@@ -3801,13 +3831,13 @@ rule agat_clean_final:
 		helixer = f"{RESULTS_DIR}AB_INITIO/Helixer/helixer.gff3",
 		augustus = f"{RESULTS_DIR}GETA/Augustus/augustus.gff3",
 		miniprot = f"{RESULTS_DIR}PROTEIN/merged_rmdup_proteins.fasta.miniprot.clean.gff3",
-		psiclass = f"{RESULTS_DIR}TRANSCRIPT/PsiClass/psiclass.STAR_vote.gff"
+		psiclass = f"{RESULTS_DIR}TRANSCRIPT/PsiClass/psiclass.STAR_vote.gff",
+		splice = rules.merge_psiclass_splice.output
 	output: f"{RESULTS_DIR}PREFILTER/Sylvan.gff3"
 	params:
 		results_dir = RESULTS_DIR,
 		pasa_dir = f"{RESULTS_DIR}TRANSCRIPT/PASA",
 		swissprot = config_dict["Input"].get("swissprot", ""),
-		splice = f"{RESULTS_DIR}TRANSCRIPT/PsiClass/splice/psiclass.STAR_bam.trusted_splice",
 		# The chimera-filtered copy pasaPost writes, not the raw EVM output.
 		# Merging the raw file undoes the guard: merge_pasa_evm.py rescues EVM
 		# genes PASA did not cover, and a model withheld from PASA is uncovered
@@ -3871,9 +3901,9 @@ rule agat_clean_final:
 		# DIAMOND. Without this ~80% of conflicts were protein-tie -> PASA
 		# (Osa: 7,212/8,979), the source of the EVM->PREFILTER intron-chain
 		# precision loss measured at -10.6 to -13.3 pt on the 2026-09 fleet.
-		if [ -s "{params.splice}" ]; then
-			echo "Using trusted splice junctions for PASA/EVM chain arbitration: {params.splice}"
-			merge_args+=(--splice {params.splice})
+		if [ -s "{input.splice}" ]; then
+			echo "Using trusted splice junctions for PASA/EVM chain arbitration: {input.splice}"
+			merge_args+=(--splice {input.splice})
 		fi
 		python3 {workflow.basedir}/merge_pasa_evm.py "${{merge_args[@]}}"
 
@@ -3885,7 +3915,7 @@ rule agat_clean_final:
 			--helixer {input.helixer} \
 			--augustus {input.augustus} \
 			--miniprot {input.miniprot} \
-			--splice {params.splice} \
+			--splice {input.splice} \
 			--output {params.results_dir}PREFILTER/Sylvan_refined.gff3
 
 		# Clean with AGAT

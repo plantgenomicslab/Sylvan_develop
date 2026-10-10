@@ -72,18 +72,25 @@ Perl and R scripts (`fillingEndsOfGeneModels.pl`, `filter_distributions.R`) run 
 conda create -n sylvan -c conda-forge -c bioconda python=3.11 snakemake=7 git-lfs -y
 conda activate sylvan
 
-# Download Singularity image (latest = v4, GPU-capable TensorFlow)
-singularity pull --arch amd64 sylvan.sif library://wyim/sylvan/sylvan:latest
-# Or a specific version: library://wyim/sylvan/sylvan:v3 (CPU-only TF, smaller)
-
 # Clone repository (with Git LFS for toy data)
 git lfs install   # one-time: registers LFS filters in ~/.gitconfig
 git clone https://github.com/plantgenomicslab/Sylvan.git
 cd Sylvan
 git lfs pull      # ensure toy-data LFS files are downloaded (not just pointers)
+# Build the image for this source revision (requires configured fakeroot support)
+singularity build --fakeroot singularity/sylvan.sif singularity/Sylvan.def
 ```
 
 #### Image and code must be in lockstep
+
+The historical public image is available at
+`library://plantgenomicslab/sylvan/sylvan.sif:latest` (the older `wyim` namespace is incorrect).
+The inspected immutable image
+`sha256.b294eb51778bc2f8b47d0ceb08282f2bb67351f09d3c8d7fbeb4ef8fa026ad32`
+was built on 2024-05-02 and lacks the micromamba layout required by the current
+workflow. It is not a compatible prebuilt image for this revision. Build from
+the checked-out definition above until a matching tested image is published.
+
 
 `bin/` is bind-mounted into the container, so Python and Snakefile changes take effect
 from a `git pull` alone. Container-level changes do not: an image predating
@@ -629,13 +636,33 @@ helixer:
   partition: your-gpu-partition   # GPU partition name
 ```
 
+### Provisioning the land-plant Helixer model
+
+If the image does not contain the model, provision the upstream model separately:
+
+```bash
+bash bin/fetch_helixer_model.sh "$PWD/models"
+```
+
+This downloads `land_plant_v0.3_a_0080.h5` from the upstream
+[Helixer model record](https://zenodo.org/records/10836346) as `models/land_plant.h5`
+and verifies SHA-256
+`a15906dbd8d60ec8dd01eb1b905d4886c2554fbf04851adfd2242a5ceac41fdb`.
+It refuses to overwrite a different existing model. Set `Input.helixer_model_dir`
+to the absolute directory and include that directory in the container bind paths,
+as shown below. The Helixer rule checks readability and HDF5 format and logs the
+model checksum before inference. These checks identify missing or invalid files;
+a complete Helixer run is still required to validate inference.
+
 ### Custom Helixer Models
 
 To use custom Helixer `.h5` model files instead of the container defaults:
 
 1. Set `helixer_model_dir` in your config to the host directory containing the model files:
    ```yaml
-   helixer_model_dir: "/path/to/custom/models"
+   Input:
+     helixer_model: land_plant
+     helixer_model_dir: "/path/to/custom/models"
    ```
 
 2. Bind the directory into the container via `SINGULARITY_BIND`:

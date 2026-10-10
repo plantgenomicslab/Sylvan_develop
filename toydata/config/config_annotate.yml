@@ -130,6 +130,11 @@ prepPsiClass_STAR:
 prepare_liftoff:
   ncpus: 1
   memory: 4g
+psiClass_bin:
+  ncpus: 1
+  threads: 1
+  memory: 8g
+  max_region_span: 5000000
 psiClass_STAR:
   ncpus: 48
   threads: 48

@@ -17,7 +17,7 @@ export SLURM_TMPDIR="$TMPDIR"
 export SYLVAN_FILTER_CONFIG="${SYLVAN_FILTER_CONFIG:-config/config_filter.yml}"
 export SYLVAN_FILTER_CLUSTER_CONFIG="${SYLVAN_FILTER_CLUSTER_CONFIG:-$SYLVAN_FILTER_CONFIG}"
 
-CLUSTER_CMD="python3 bin/cluster_submit.py {cluster.nodes} {cluster.memory} {cluster.ncpus} {cluster.name} {cluster.account} {cluster.partition} {cluster.time} {cluster.output} {cluster.error} {cluster.extra_args}"
+CLUSTER_CMD="python3 bin/cluster_submit.py {cluster.nodes} {cluster.memory} {cluster.ncpus} {cluster.name} '{cluster.account}' '{cluster.partition}' '{cluster.time}' '{cluster.output}' '{cluster.error}' {cluster.extra_args}"
 
 for cfg in "$SYLVAN_FILTER_CONFIG" "$SYLVAN_FILTER_CLUSTER_CONFIG"; do
 	if [ ! -f "$cfg" ]; then

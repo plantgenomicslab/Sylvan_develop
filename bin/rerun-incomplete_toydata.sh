@@ -49,7 +49,7 @@ export SYLVAN_CONFIG="toydata/config/config_annotate.yml"
 export SYLVAN_CLUSTER_CONFIG="toydata/config/cluster_annotate.yml"
 
 # Cluster submit command — account and partition are optional (skipped when empty or 'placeholder')
-CLUSTER_CMD="python3 bin/cluster_submit.py {cluster.nodes} {cluster.memory} {cluster.ncpus} {cluster.name} {cluster.account} {cluster.partition} {cluster.time} {cluster.output} {cluster.error} {cluster.extra_args}"
+CLUSTER_CMD="python3 bin/cluster_submit.py {cluster.nodes} {cluster.memory} {cluster.ncpus} {cluster.name} '{cluster.account}' '{cluster.partition}' '{cluster.time}' '{cluster.output}' '{cluster.error}' {cluster.extra_args}"
 
 # Rerun incomplete jobs with mtime trigger to detect changed files
 snakemake -p \

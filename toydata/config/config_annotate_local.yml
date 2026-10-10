@@ -6,10 +6,10 @@
 
 Input:
   prefix: ath4_toydata
-  genome: toydata/genome/ath4.fasta        # Use uncompressed fasta directly (LFS .gz not available)
+  genome: toydata/genome/ath4.fasta.gz     # Compressed toy genome is included in the clone
   rna_seq: toydata/RNASeq
   proteins: toydata/cds_aa/neighbor.aa
-  singularity: singularity/Sylvan_sandbox_v4
+  singularity: singularity/sylvan.sif
   liftoff:
     neighbor_gff: toydata/neighbor_gff3
     neighbor_fasta: toydata/neighbor_genome
@@ -99,6 +99,11 @@ prepPsiClass_STAR:
 prepare_liftoff:
   ncpus: 1
   memory: 4g
+psiClass_bin:
+  ncpus: 1
+  threads: 1
+  memory: 8g
+  max_region_span: 5000000
 psiClass_STAR:
   ncpus: 12
   threads: 12
