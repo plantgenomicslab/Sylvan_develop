@@ -4,7 +4,7 @@
 #
 ###############################################################################################
 
-Singularity: singularity/Sylvan_sandbox_v4
+Singularity: singularity/sylvan.sif
 
 Input:
   genome: results/GETA/genome.fasta
