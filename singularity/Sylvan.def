@@ -482,7 +482,7 @@ YAMLEOF
 		s|('RMBLAST_DIR'.*?'value' => )'[^']*'|\$1'$REPEAT_PREFIX/bin'|s;
 		s|('RECON_DIR'.*?'value' => )'[^']*'|\$1'$REPEAT_PREFIX/bin'|s;
 		s|('RSCOUT_DIR'.*?'value' => )'[^']*'|\$1'$REPEAT_PREFIX/bin'|s;
-		s|('TRF_PRGM'.*?'value' => )'[^']*'|\$1'$REPEAT_PREFIX/bin/trf'|s;
+		s|('TRF_DIR'.*?'value' => )'[^']*'|\$1'$REPEAT_PREFIX/bin'|s;
 		s|('CDHIT_DIR'.*?'value' => )'[^']*'|\$1'$REPEAT_PREFIX/bin'|s;
 		s|('LTR_RETRIEVER_DIR'.*?'value' => )'[^']*'|\$1'$REPEAT_PREFIX/bin'|s;
 		s|('GENOMETOOLS_DIR'.*?'value' => )'[^']*'|\$1'$REPEAT_PREFIX/bin'|s;

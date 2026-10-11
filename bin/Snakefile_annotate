@@ -460,6 +460,9 @@ rule RepeatModeler:
 	params: results_dir = RESULTS_DIR
 	shell:"""
 		micromamba activate repeat
+		# RepeatModeler 2.0.5 resolves TRF_DIR, unlike RepeatMasker's TRF_PRGM.
+		# Use the active environment while preserving an explicit user override.
+		export TRF_DIR="${{TRF_DIR:-$(dirname "$(command -v trf)")}}"
 		cd {params.results_dir}GETA/RepeatMasker/repeatModeler && \
 		if [ ! -e  BuildDatabase.ok ]; then
 		  BuildDatabase -name {params.results_dir}GETA/RepeatMasker/repeatModeler/species -engine ncbi {input.genome_fasta}
