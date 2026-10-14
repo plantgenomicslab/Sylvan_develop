@@ -7,8 +7,10 @@ on:
       - 'bin/Snakefile_filter'
       - 'config/config_filter.yml'
       - 'toydata/config/config_filter.yml'
+      - 'toydata/config/config_filter_local.yml'
       - 'toydata/config/cluster_filter.yml'
       - 'test/check_cluster_config.py'
+      - 'test/test_filter_config.py'
       - '.github/workflows/cluster-config-check.yml'
   pull_request:
     branches: [ main ]
@@ -16,8 +18,10 @@ on:
       - 'bin/Snakefile_filter'
       - 'config/config_filter.yml'
       - 'toydata/config/config_filter.yml'
+      - 'toydata/config/config_filter_local.yml'
       - 'toydata/config/cluster_filter.yml'
       - 'test/check_cluster_config.py'
+      - 'test/test_filter_config.py'
       - '.github/workflows/cluster-config-check.yml'
 
 jobs:
@@ -30,6 +34,9 @@ jobs:
           python-version: "3.11"
       - name: Install YAML parser
         run: pip install pyyaml
+
+      - name: Required keys in shipped filter templates
+        run: python test/test_filter_config.py
 
       # Production: one file is both pipeline config and --cluster-config.
       - name: Production filter config

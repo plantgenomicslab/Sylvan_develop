@@ -75,7 +75,9 @@ Threads:
   prepRSEM: 8
   STAR: 8
   mergeSTAR: 8
-  calculateRSEMExpression: 8
+  calculateRSEMExpression_PAIRED: 8
+  calculateRSEMExpression_SINGLE: 8
+  busco: 4
   lncRNA_pred: 8
   STAR_index: 8
 

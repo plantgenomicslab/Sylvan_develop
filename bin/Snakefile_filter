@@ -841,7 +841,8 @@ rule busco:
 		micromamba activate filter
 		busco -i {input} \
 		-l {params.busco_lin} \
-		-o {params.results_dir}FILTER/busco_{params.busco_lin} \
+		-o busco_{params.busco_lin} \
+		--out_path {params.results_dir}FILTER \
 		-m protein \
 		-c {threads} \
 		-f

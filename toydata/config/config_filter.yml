@@ -61,6 +61,7 @@ Cutoff:
   helixer_cov: 0.8         # Helixer coverage cutoff (keep genes greater than)
   augustus_cov: 0.8        # Augustus coverage cutoff (keep genes greater than)
   repeat_cov: 0.5          # Repeat coverage cutoff (keep genes less than)
+  miniprot_cov: 0.5        # Miniprot alignment coverage cutoff for rescue
 
 ###############################################################################################
 #
