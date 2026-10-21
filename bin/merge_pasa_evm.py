@@ -196,13 +196,52 @@ def reference_cds_chains(evm_genes):
     return references
 
 
+def unsafe_phase_block_ids(genes):
+    """Exclude phase repair when gene-block parsing cannot see a full chain.
+
+    Selection retains its existing block parser. Foreign children, transcripts
+    outside their declared parent gene, and duplicate transcript declarations
+    must not make a matching prefix look like a unique full CDS chain.
+    """
+    unsafe, declared, gene_members = set(), Counter(), defaultdict(set)
+    for _, _, _, _, gid, lines in genes:
+        fields = [line.rstrip("\n").split("\t") for line in lines]
+        local = set()
+        for row in fields:
+            if len(row) != 9 or row[2] not in ("mRNA", "transcript"):
+                continue
+            match = re.search(r"(?:^|;)ID=([^;\s]+)", row[8])
+            if match:
+                tid = match.group(1)
+                local.add(tid)
+                declared[tid] += 1
+                parent = re.search(r"(?:^|;)Parent=([^;\s]+)", row[8])
+                if parent:
+                    for gene in parent.group(1).split(","):
+                        gene_members[gene].add(tid)
+                if not parent or parent.group(1) != gid:
+                    unsafe.add(tid)
+        for row in fields:
+            # Exceptions may be carried by exons or other children as well as
+            # CDSs. A foreign child must not hide them in another gene block.
+            if len(row) == 9 and row[2] not in ("gene", "mRNA", "transcript"):
+                parent = re.search(r"(?:^|;)Parent=([^;\s]+)", row[8])
+                if parent:
+                    unsafe.update(set(parent.group(1).split(",")) - local)
+    unsafe.update(tid for tid, count in declared.items() if count != 1)
+    for parent in list(unsafe):
+        unsafe.update(gene_members.get(parent, ()))
+    return unsafe
+
+
 def repair_unchanged_cds_phases(lines, references):
     """Repair PASA phase representation only for unchanged valid EVM chains.
 
     PASA 2.5.3 can invert 1/2 on an unchanged GFF3 import/export. Restore a
     differing initial phase only for that full-vector signature when the
-    observed vector also fails continuity. Other initial differences remain
-    unchanged and reported. The continuity guard is conservative: inversions
+    observed vector also fails continuity. For other initial differences the
+    entire vector remains unchanged and is reported. The continuity guard is
+    conservative: inversions
     can be internally consistent when non-final CDS lengths are multiples of
     three (including single-CDS chains); those are counted as unresolved.
     Translation is never used to choose a frame.
@@ -225,8 +264,8 @@ def repair_unchanged_cds_phases(lines, references):
         restore_initial = initial_differs and inversion and observed != phases
         if restore_initial:
             phases = _phases_from_initial(segments, initial=reference_phases[0])
-        # A restored or already matching initial phase must reproduce the
-        # entire valid reference vector, not just an internally consistent one.
+        # Defensive identity check: with valid references and identical geometry,
+        # normalization must reproduce their entire phase vector by construction.
         if (restore_initial or not initial_differs) and phases != reference_phases:
             counts['unresolved_identity'] += 1
             counts['initial_preserved'] += int(initial_differs)
@@ -239,6 +278,7 @@ def repair_unchanged_cds_phases(lines, references):
                 counts['unresolved_inversions'] += 1
             print(f"WARNING: first-phase difference from EVM preserved for {key}; "
                   f"full inversion={inversion}, continuity-valid={observed == phases}", file=sys.stderr)
+            continue
         transcript_changed = False
         for ordinal, (segment, phase) in enumerate(zip(segments, phases)):
             if segment[2] == phase:
@@ -679,6 +719,11 @@ def main():
     pasa_genes = parse_genes(pasa_gff)
     evm_genes = parse_genes(evm_gff)
     phase_references = reference_cds_chains(evm_genes)
+    unsafe_phase_ids = unsafe_phase_block_ids(pasa_genes) | unsafe_phase_block_ids(evm_genes)
+    phase_references = {key: value for key, value in phase_references.items()
+                        if key[2] not in unsafe_phase_ids}
+    for tid in sorted(unsafe_phase_ids):
+        print(f"WARNING: phase repair excluded interleaved/ambiguous block ID {tid}", file=sys.stderr)
 
     print(f"Loaded {len(pasa_genes)} PASA genes, {len(evm_genes)} EVM genes", file=sys.stderr)
 
@@ -740,7 +785,7 @@ def main():
     stats = {"evm_wins": 0, "pasa_wins": 0, "tie": 0, "grafted_isoforms": 0,
              "junction_evm": 0, "junction_pasa": 0, "graft_rejected": 0,
              "evm_backfilled": 0}
-    phase_counts = Counter()
+    phase_counts = Counter(unsupported_block_ids=len(unsafe_phase_ids))
 
     def apply_evm_win(evm_info, pidx, pasa_info):
         chrom, start, end, strand, gid, lines = evm_info
@@ -920,7 +965,8 @@ def main():
           f"{phase_counts['initial_preserved']} first-phase differences from EVM preserved; "
           f"{phase_counts['initial_restored']} initial phases restored; "
           f"{phase_counts['unresolved_inversions']} unresolved initial-phase inversions; "
-          f"{phase_counts['unresolved_identity']} unresolved normalization identities", file=sys.stderr)
+          f"{phase_counts['unresolved_identity']} unresolved normalization identities; "
+          f"{phase_counts['unsupported_block_ids']} unsupported block IDs", file=sys.stderr)
     print(f"  PASA genes: {len(pasa_genes)} ({len(pasa_replaced)} replaced by "
           f"{evm_blocks_emitted} EVM genes)", file=sys.stderr)
     print(f"  Rescued EVM genes: {rescued_count} "

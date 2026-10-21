@@ -57,13 +57,14 @@ class PhaseExportTests(unittest.TestCase):
         self.assertEqual([r[7] for r in rows(result) if r[2]=='CDS'], ['2','0'])
         self.assert_other_columns_preserved(pasa, result)
 
-    def test_current_first_phase_is_not_replaced_by_reference_first_phase(self):
+    def test_noninversion_initial_difference_leaves_entire_vector_untouched(self):
         evm = fixture('+', [(1,5,0),(11,17,1)])
         pasa = fixture('+', [(1,5,1),(11,17,0)])
         result, log = self.merge(evm, pasa)
-        self.assertEqual([r[7] for r in rows(result) if r[2]=='CDS'], ['1','2'])
+        self.assertEqual([r[7] for r in rows(result) if r[2]=='CDS'], ['1','0'])
         self.assert_other_columns_preserved(pasa, result)
         self.assertIn('1 first-phase differences from EVM preserved', log)
+        self.assertIn('CDS phase metadata: 0 transcripts', log)
 
     def test_partial_initial_phase_restored_only_for_inconsistent_full_inversion(self):
         for strand in ['+', '-']:
@@ -174,6 +175,60 @@ class PhaseExportTests(unittest.TestCase):
         self.assertEqual([(r[3], r[4], r[7]) for r in graft],
                          [('1', '305', '0'), ('400', '600', '2'), ('700', '720', '2')])
         self.assertIn('CDS phase metadata: 0 transcripts, 0 downstream rows corrected', log)
+
+    def test_foreign_gene_block_child_cannot_hide_changed_chain_or_exception(self):
+        evm1 = fixture('+', [(1,305,0),(400,600,1)]).replace('\t1\t600\t', '\t1\t900\t')
+        evm1 += 'chr1\tEVM\texon\t700\t900\t.\t+\t.\tID=e3;Parent=t1\n'
+        pasa1 = evm1.replace('\t+\t1\tID=c2', '\t+\t2\tID=c2')
+        other = fixture('+', [(1000,1200,0)]).replace('g1','g2').replace('t1','t2')
+        for exception in ['', ';transl_except=(pos:700..702,aa:Sec)']:
+            with self.subTest(exception=exception):
+                pasa = pasa1 + other + 'chr1\tPASA\tCDS\t700\t720\t.\t+\t2\tID=c3;Parent=t1' + exception + '\n'
+                result, log = self.merge(evm1 + other, pasa)
+                self.assertEqual([r[7] for r in rows(result) if r[2]=='CDS' and 'Parent=t1' in r[8]], ['0','2','2'])
+                self.assertIn('CDS phase metadata: 0 transcripts', log)
+
+    def test_interleaved_reference_cannot_supply_a_matching_prefix(self):
+        first = fixture('+', [(1,305,0),(400,600,1)]).replace('\t1\t600\t', '\t1\t900\t')
+        first += 'chr1\tEVM\texon\t700\t900\t.\t+\t.\tID=e3;Parent=t1\n'
+        other = fixture('+', [(1000,1200,0)]).replace('g1','g2').replace('t1','t2')
+        evm = first + other + 'chr1\tEVM\tCDS\t700\t720\t.\t+\t1\tID=c3;Parent=t1\n'
+        pasa = evm.replace('\t+\t1\tID=c2', '\t+\t2\tID=c2').replace('\t+\t1\tID=c3', '\t+\t2\tID=c3')
+        result, log = self.merge(evm, pasa)
+        self.assertEqual([r[7] for r in rows(result) if r[2]=='CDS' and 'Parent=t1' in r[8]], ['0','2','2'])
+        self.assertIn('CDS phase metadata: 0 transcripts', log)
+
+    def test_duplicate_pasa_identity_across_gene_blocks_is_not_repaired(self):
+        evm = fixture('+', [(1,305,0),(400,600,1)])
+        pasa = fixture('+', [(1,305,0),(400,600,2)])
+        result, log = self.merge(evm, pasa + pasa.replace('g1', 'g2'))
+        self.assertEqual([r[7] for r in rows(result) if r[2]=='CDS'], ['0','2','0','2'])
+        self.assertIn('CDS phase metadata: 0 transcripts', log)
+
+    def test_transcript_outside_parent_gene_block_is_not_repaired(self):
+        evm = fixture('+', [(1,305,0),(400,600,1)])
+        body = fixture('+', [(1,305,0),(400,600,2)]).splitlines()
+        gene = body[1] + ';exception=ribosomal_slippage\n'
+        other = fixture('+', [(1000,1200,0)]).replace('g1','g2').replace('t1','t2')
+        pasa = gene + other + '\n'.join(body[2:]) + '\n'
+        result, log = self.merge(evm, pasa)
+        self.assertEqual([r[7] for r in rows(result) if r[2]=='CDS' and 'Parent=t1' in r[8]], ['0','2'])
+        self.assertIn('CDS phase metadata: 0 transcripts', log)
+
+    def test_foreign_non_cds_exception_follows_its_parent_in_either_input(self):
+        evm = fixture('+', [(1,305,0),(400,600,1)])
+        pasa = fixture('+', [(1,305,0),(400,600,2)])
+        other = fixture('+', [(1000,1200,0)]).replace('g1','g2').replace('t1','t2')
+        exon = next(line for line in evm.splitlines(True) if '\texon\t1\t305\t' in line)
+        for which in ['evm', 'pasa']:
+            for attribute in ['exception=ribosomal_slippage', 'transl_except=(pos:1..3,aa:Sec)', 'Gap=M1']:
+                with self.subTest(which=which, attribute=attribute):
+                    altered = (evm if which == 'evm' else pasa).replace(exon, '')
+                    altered += other + exon.rstrip('\n') + ';' + attribute + '\n'
+                    reference, query = ((altered, pasa + other) if which == 'evm' else (evm + other, altered))
+                    result, log = self.merge(reference, query)
+                    self.assertEqual([r[7] for r in rows(result) if r[2]=='CDS' and 'Parent=t1' in r[8]], ['0','2'])
+                    self.assertIn('CDS phase metadata: 0 transcripts', log)
 
     def test_repair_is_idempotent(self):
         evm = fixture('+', [(1,305,0),(400,600,1)])
