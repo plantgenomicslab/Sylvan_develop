@@ -51,3 +51,5 @@ jobs:
         python bin/test_feature_importance.py
         python bin/test_filter_gff.py
         python bin/test_gff3clear_order.py
+        python bin/test_merge_pasa_evm_junction.py
+        python bin/test_merge_pasa_phase.py

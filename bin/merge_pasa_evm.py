@@ -40,7 +40,7 @@ import re
 import subprocess
 import sys
 import tempfile
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 from refine_boundaries import get_introns, load_splice_junctions
 
@@ -114,6 +114,149 @@ def get_mrna_ids(lines):
             if m:
                 mrna_ids.append(m.group(1))
     return mrna_ids
+
+
+def _phase_models(lines):
+    """Collect unambiguous CDS chains without inferring a new coding frame."""
+    if any(re.search(r"(?:^|;)(?:exception|transl_except|Gap)=", line.split("\t")[-1], re.I)
+           for line in lines):
+        return {}
+    models, children, blocked = {}, defaultdict(list), set()
+    for index, line in enumerate(lines):
+        fields = line.rstrip("\n").split("\t")
+        if len(fields) != 9:
+            continue
+        if fields[2] in ("mRNA", "transcript"):
+            match = re.search(r"(?:^|;)ID=([^;\s]+)", fields[8])
+            if not match:
+                continue
+            tid = match.group(1)
+            if tid in models:
+                blocked.add(tid)
+            models[tid] = (fields[0], fields[6])
+        elif fields[2] == "CDS":
+            match = re.search(r"(?:^|;)Parent=([^;\s]+)", fields[8])
+            parents = match.group(1).split(",") if match else []
+            if len(parents) != 1:
+                blocked.update(parents)
+                continue
+            tid = parents[0]
+            if fields[7] not in ("0", "1", "2"):
+                blocked.add(tid)
+                continue
+            children[tid].append((int(fields[3]), int(fields[4]), int(fields[7]),
+                                  index, fields[0], fields[6]))
+    result = {}
+    for tid, (chrom, strand) in models.items():
+        segments = children[tid]
+        if tid in blocked or not segments or strand not in ("+", "-"):
+            continue
+        ordered = sorted(segments, reverse=strand == "-")
+        genomic = sorted(segments)
+        if any(s > e or c != chrom or st != strand for s, e, _, _, c, st in ordered):
+            continue
+        if any(right[0] <= left[1] for left, right in zip(genomic, genomic[1:])):
+            continue
+        result[(chrom, strand, tid)] = ordered
+    return result
+
+
+def _phases_from_initial(segments, initial=None):
+    """GFF3 phase is the skip to the next codon, not cumulative frame."""
+    if initial is None:
+        initial = segments[0][2]
+    cumulative = -initial
+    phases = []
+    for index, (start, end, _, *rest) in enumerate(segments):
+        phases.append(initial if index == 0 else (-cumulative) % 3)
+        cumulative += end - start + 1
+    return phases
+
+
+def reference_cds_chains(evm_genes):
+    """Index only valid, uniquely identified EVM chains for phase repair."""
+    occurrences = defaultdict(int)
+    # Count identities before validity filtering: an unsafe duplicate still
+    # makes the otherwise valid reference ambiguous, regardless of input order.
+    for gene in evm_genes:
+        for line in gene[-1]:
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) != 9 or fields[2] not in ("mRNA", "transcript"):
+                continue
+            match = re.search(r"(?:^|;)ID=([^;\s]+)", fields[8])
+            if match:
+                occurrences[(fields[0], fields[6], match.group(1))] += 1
+    references = {}
+    for gene in evm_genes:
+        for key, segments in _phase_models(gene[-1]).items():
+            if occurrences[key] != 1:
+                continue
+            if [s[2] for s in segments] == _phases_from_initial(segments):
+                references[key] = segments
+    return references
+
+
+def repair_unchanged_cds_phases(lines, references):
+    """Repair PASA phase representation only for unchanged valid EVM chains.
+
+    PASA 2.5.3 can invert 1/2 on an unchanged GFF3 import/export. Restore a
+    differing initial phase only for that full-vector signature when the
+    observed vector also fails continuity. Other initial differences remain
+    unchanged and reported. The continuity guard is conservative: inversions
+    can be internally consistent when non-final CDS lengths are multiples of
+    three (including single-CDS chains); those are counted as unresolved.
+    Translation is never used to choose a frame.
+    No coordinate, identifier, model choice, or other GFF field is changed.
+    Changed chains, ambiguous parents and explicit translation exceptions are
+    outside this bounded repair and are left untouched for separate validation.
+    """
+    output = lines
+    counts = Counter(transcripts=0, downstream_rows=0, initial_preserved=0,
+                     initial_restored=0, unresolved_inversions=0, unresolved_identity=0)
+    for key, segments in _phase_models(lines).items():
+        reference = references.get(key)
+        if reference is None or [s[:2] for s in segments] != [s[:2] for s in reference]:
+            continue
+        observed = [s[2] for s in segments]
+        reference_phases = [s[2] for s in reference]
+        initial_differs = observed[0] != reference_phases[0]
+        inversion = observed == [(-phase) % 3 for phase in reference_phases]
+        phases = _phases_from_initial(segments)
+        restore_initial = initial_differs and inversion and observed != phases
+        if restore_initial:
+            phases = _phases_from_initial(segments, initial=reference_phases[0])
+        # A restored or already matching initial phase must reproduce the
+        # entire valid reference vector, not just an internally consistent one.
+        if (restore_initial or not initial_differs) and phases != reference_phases:
+            counts['unresolved_identity'] += 1
+            counts['initial_preserved'] += int(initial_differs)
+            print(f"WARNING: phase normalization does not reproduce EVM for {key}; left unchanged",
+                  file=sys.stderr)
+            continue
+        if initial_differs and not restore_initial:
+            counts['initial_preserved'] += 1
+            if inversion:
+                counts['unresolved_inversions'] += 1
+            print(f"WARNING: first-phase difference from EVM preserved for {key}; "
+                  f"full inversion={inversion}, continuity-valid={observed == phases}", file=sys.stderr)
+        transcript_changed = False
+        for ordinal, (segment, phase) in enumerate(zip(segments, phases)):
+            if segment[2] == phase:
+                continue
+            if output is lines:
+                output = list(lines)
+            fields = output[segment[3]].split("\t")
+            fields[7] = str(phase)
+            output[segment[3]] = "\t".join(fields)
+            if ordinal == 0:
+                counts['initial_restored'] += 1
+                print(f"CDS phase restoration: {key}, initial {observed[0]} -> {phase}; "
+                      "unchanged chain with inconsistent full inversion", file=sys.stderr)
+            else:
+                counts['downstream_rows'] += 1
+            transcript_changed = True
+        counts['transcripts'] += int(transcript_changed)
+    return output, counts
 
 
 def get_mrna_spans(lines):
@@ -417,10 +560,13 @@ def isoform_introns_supported(mrna_lines, chrom, strand, junctions):
 
 
 def build_evm_gene_with_pasa_isoforms(evm_lines, pasa_lines, evm_start, evm_end, evm_gene_id,
-                                      chrom=None, strand=None, junctions=None):
+                                      chrom=None, strand=None, junctions=None,
+                                      phase_references=None, phase_counts=None):
     """Build a gene using EVM as base, adding PASA isoforms within EVM boundaries.
 
-    Returns GFF3 lines for the merged gene.
+    Returns (merged GFF3 lines, grafted count, rejected count). When references
+    are supplied, repair selected isoforms before renaming and optionally add
+    their correction counts to the caller's phase_counts Counter.
     """
     output_lines = []
 
@@ -430,6 +576,14 @@ def build_evm_gene_with_pasa_isoforms(evm_lines, pasa_lines, evm_start, evm_end,
 
     # Find PASA mRNAs that fall within EVM gene boundaries
     pasa_mrnas = get_mrna_spans(pasa_lines)
+    # Validate the whole source block first so splitting it into isoforms does
+    # not hide duplicate IDs, shared parents, or a gene-level exception.
+    eligible_references = {}
+    if phase_references:
+        for key, segments in _phase_models(pasa_lines).items():
+            reference = phase_references.get(key)
+            if reference is not None and [s[:2] for s in segments] == [s[:2] for s in reference]:
+                eligible_references[key] = reference
     grafted = 0
     graft_rejected = 0
     for mrna_start, mrna_end, mrna_id, mrna_lines in pasa_mrnas:
@@ -440,6 +594,9 @@ def build_evm_gene_with_pasa_isoforms(evm_lines, pasa_lines, evm_start, evm_end,
                 graft_rejected += 1
                 continue
             grafted += 1
+            mrna_lines, counts = repair_unchanged_cds_phases(mrna_lines, eligible_references)
+            if phase_counts is not None:
+                phase_counts.update(counts)
             for line in mrna_lines:
                 parts = line.strip().split("\t")
                 if len(parts) < 9:
@@ -521,6 +678,7 @@ def main():
 
     pasa_genes = parse_genes(pasa_gff)
     evm_genes = parse_genes(evm_gff)
+    phase_references = reference_cds_chains(evm_genes)
 
     print(f"Loaded {len(pasa_genes)} PASA genes, {len(evm_genes)} EVM genes", file=sys.stderr)
 
@@ -582,12 +740,14 @@ def main():
     stats = {"evm_wins": 0, "pasa_wins": 0, "tie": 0, "grafted_isoforms": 0,
              "junction_evm": 0, "junction_pasa": 0, "graft_rejected": 0,
              "evm_backfilled": 0}
+    phase_counts = Counter()
 
     def apply_evm_win(evm_info, pidx, pasa_info):
         chrom, start, end, strand, gid, lines = evm_info
         merged_lines, n_grafted, n_rejected = build_evm_gene_with_pasa_isoforms(
             lines, pasa_info[3], start, end, gid,
-            chrom=chrom, strand=strand, junctions=junctions)
+            chrom=chrom, strand=strand, junctions=junctions,
+            phase_references=phase_references, phase_counts=phase_counts)
         pasa_replaced[pidx].append(merged_lines)
         stats["grafted_isoforms"] += n_grafted
         stats["graft_rejected"] += n_rejected
@@ -724,6 +884,11 @@ def main():
                     for line in block:
                         f.write(line)
             else:
+                # PASA can export cumulative frame in the phase column for
+                # unchanged EVM models. Correct metadata after all selection
+                # decisions; initial-phase restoration has its own strict gate.
+                lines, counts = repair_unchanged_cds_phases(lines, phase_references)
+                phase_counts.update(counts)
                 # PASA blocks need the same collision check as EVM ones. The
                 # check used to run in one direction only -- a PASA block just
                 # registered its IDs -- so a PASA gene written late could
@@ -750,6 +915,12 @@ def main():
     evm_blocks_emitted = sum(len(v) for v in pasa_replaced.values())
     total_genes = len(pasa_genes) - len(pasa_replaced) + evm_blocks_emitted + rescued_count
     print(f"\nResults:", file=sys.stderr)
+    print(f"  CDS phase metadata: {phase_counts['transcripts']} transcripts, "
+          f"{phase_counts['downstream_rows']} downstream rows corrected; "
+          f"{phase_counts['initial_preserved']} first-phase differences from EVM preserved; "
+          f"{phase_counts['initial_restored']} initial phases restored; "
+          f"{phase_counts['unresolved_inversions']} unresolved initial-phase inversions; "
+          f"{phase_counts['unresolved_identity']} unresolved normalization identities", file=sys.stderr)
     print(f"  PASA genes: {len(pasa_genes)} ({len(pasa_replaced)} replaced by "
           f"{evm_blocks_emitted} EVM genes)", file=sys.stderr)
     print(f"  Rescued EVM genes: {rescued_count} "
