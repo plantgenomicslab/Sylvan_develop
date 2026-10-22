@@ -338,6 +338,27 @@ This section describes the inputs, configuration, and commands needed to run the
 | Repeat library | EDTA output (`.TElib.fa`) | `geta.RM_lib` |
 | Singularity image | Path to `sylvan.sif` | `singularity` |
 
+### Pairing neighbor references
+
+Reference FASTA and GFF files are paired by their full filename stems, such as `Aly.fna` with `Aly.gff3`. The unambiguous `Aly.genome.fa` / `Aly.gene.gff3` convention is also supported. The workflow does not infer pairs from the first three filename characters.
+
+When filenames do not identify a unique pair, specify only the exceptions under `Input.liftoff.pairs`; remaining files are paired automatically:
+
+```yaml
+Input:
+  liftoff:
+    neighbor_fasta: refs/genomes
+    neighbor_gff: refs/annotations
+    pairs:
+      reference_a:
+        fasta: assembly_a.fna
+        gff: annotation_a.gff3
+```
+
+Each name must identify exactly one discovered file; use its declared full path if a basename repeats. Reference coordinates and sequence content are preserved. Sequence and feature IDs, including `Parent` and `Derives_from`, receive consistent reference namespaces to prevent collisions. `results/LIFTOVER/LiftOff/combined.pairs.tsv` records the source files and namespaces. Inputs are never modified. Existing workflow outputs must be regenerated after changing references.
+
+An empty combined annotation is an error. A nonempty annotation without exon features is rejected by default; the existing `Input.allow_missing_gmap_exon: true` option explicitly permits an empty GMAP exon track with a warning. It does not enable zero-reference annotation.
+
 ### Running the Pipeline
 
 #### SLURM (HPC)
@@ -696,44 +717,33 @@ cpu-s3-test-0  8:00:00      2    64   191000
 
 Note your **account name** (e.g., `cpu-s1-pgl-0`) and **partition name** (e.g., `cpu-s1-pgl-0`). On some clusters these are different; on others they are the same. If your cluster does not require an account or partition, you can leave them empty or set to `placeholder`.
 
-#### Step 2: Generate a cluster config file
+#### Step 2: Generate and select a cluster config
 
-Use `generate_cluster_from_config.py` to create a cluster config tailored to your cluster. The script reads per-rule resource requirements from `config_annotate.yml` and adds your SLURM account/partition.
+The generator preserves source resource settings unless a CLI option changes a default. An explicit per-rule setting still takes precedence over `__default__`.
 
 ```bash
 python3 bin/generate_cluster_from_config.py \
   --config config/config_annotate.yml \
   --out config/cluster_annotate.yml \
   --account your-account \
-  --partition your-partition
+  --partition your-partition \
+  --time "14-00:00:00"
+
+export SYLVAN_CONFIG="config/config_annotate.yml"
+export SYLVAN_CLUSTER_CONFIG="config/cluster_annotate.yml"
 ```
 
-**What this does:**
-- Extracts per-rule CPU/memory/time settings from `config_annotate.yml`
-- Sets `__default__.account` and `__default__.partition` to your values
-- **Auto-detects walltime**: queries `sinfo` for your partition's max time limit and sets `time = max - 1 day` (e.g., if max is 14 days, sets 13 days). Falls back to 9 days if `sinfo` is unavailable.
-- Writes a standalone `cluster_annotate.yml` ready for Snakemake's `--cluster-config`
+`SYLVAN_CONFIG` continues to select pipeline inputs and tool parameters. `SYLVAN_CLUSTER_CONFIG` selects the generated scheduler settings; generating the file alone does not activate it. For filtering, use `SYLVAN_FILTER_CONFIG` and `SYLVAN_FILTER_CLUSTER_CONFIG`.
 
-To override the auto-detected time, use `--time`:
-```bash
-python3 bin/generate_cluster_from_config.py \
-  --config config/config_annotate.yml \
-  --out config/cluster_annotate.yml \
-  --account your-account --partition your-partition \
-  --time "5-00:00:00"
-```
+The `--account`, `--partition`, and `--time` options change generated defaults. If omitted, the corresponding source defaults are retained. Per-rule account, partition, time, CPU, memory and extra arguments remain available. In particular, selecting a default CPU partition does not replace a rule's explicit GPU partition.
 
-For the toy data:
-```bash
-python3 bin/generate_cluster_from_config.py \
-  --config toydata/config/config_annotate.yml \
-  --out toydata/config/cluster_annotate.yml \
-  --account your-account --partition your-partition
-```
+Automatic time selection is used only when `--time auto` is explicit or the source has no default time. Its policy is the finite partition maximum minus one day, or the maximum itself when it is at most one day. An unavailable or unlimited maximum produces a visible warning and a nine-day fallback. The generated header records this choice and the `sinfo` result. Automatic selection never replaces an explicit source time unless requested.
 
-#### Step 3: Verify the generated config
+For the toy dataset, use the same command with `--config toydata/config/config_annotate.yml` and `--out toydata/config/cluster_annotate.yml`, then select those two paths with the environment variables used by the toy entrypoint.
 
-Open the generated file and check that `__default__` looks correct:
+#### Step 3: Verify the effective settings
+
+For the explicit fourteen-day example above, the generated defaults include:
 
 ```yaml
 __default__:
@@ -742,39 +752,47 @@ __default__:
   memory: 4g
   ncpus: 1
   nodes: 1
-  time: "13-00:00:00"          # Auto-detected: partition max (14d) minus 1 day
+  time: "14-00:00:00"
   name: '{rule}.{wildcards}'
   output: results/logs/{rule}_{wildcards}.out
   error: results/logs/{rule}_{wildcards}.err
   extra_args: ''
 ```
 
-> **Important:** Always quote time values in YAML (e.g., `time: "3-00:00:00"`). Unquoted values like `72:00:00` are silently parsed as integers by YAML 1.1, resulting in incorrect SLURM walltimes. The generator handles this automatically.
+Check per-rule sections too: their explicit values override these defaults. Account and partition may be omitted, null, empty, or `placeholder` when the cluster does not require them.
 
-#### Step 4: Do a dry run
+Quote YAML walltimes for portability. Slurm interprets `"60"` as sixty minutes, `"1:30"` as ninety seconds, and `"72:00:00"` as seventy-two hours. The launcher preserves the original time text before YAML 1.1 can turn a colon value into an integer. A genuine integer `259200` remains a request for 259,200 minutes; it is never guessed to mean seventy-two hours.
+
+Entry scripts retain normalized scheduler files and `provenance.json` under `results/cluster-config/effective-*/`, including original/effective paths and hashes. Original YAML files are unchanged. Repeated `--cluster-config FILE` (or `-u FILE`) options remain in command order and are merged by Snakemake; later files override earlier values, and per-rule values override defaults.
+
+#### Step 4: Check configuration loading and the DAG
 
 ```bash
-export SYLVAN_CONFIG="config/config_annotate.yml"
-snakemake -n --snakefile bin/Snakefile_annotate
+bash bin/annotate.sh --dry-run
 ```
 
-If this completes without errors, your configuration is valid.
+This checks configuration loading and workflow planning. It does not submit jobs or establish partition access. During submission, the wrapper checks the effective time and partition, including overrides in `extra_args`; a known incompatible request fails without submitting or shortening it.
 
 #### Step 5: Run the pipeline
 
+The environment variables selected in Step 2 must remain exported.
+
 ```bash
-# Submit as a SLURM head job (recommended)
+# Submit the controller with the requested walltime.
 sbatch -A your-account -p your-partition -c 1 --mem=1g \
+  --time=14-00:00:00 \
   -J annotate -o annotate.out -e annotate.err \
   --wrap="./bin/annotate.sh"
 
-# Or run directly (if already on a compute node)
+# Or run directly from an appropriate allocation.
 ./bin/annotate.sh
 ```
 
+The controller's account/partition flags are independent of child-job settings; omit them here too if your cluster does not require them. Select a partition that permits the requested time.
+
 #### Reconfiguring for a different cluster
 
-If you move to a new HPC system, re-run Step 2 with the new account/partition. The generator will auto-detect the new partition's time limit. All other settings (per-rule resources) are preserved from `config_annotate.yml`.
+Regenerate the cluster file with the new default account and partition, inspect any per-rule overrides, and export the new file path. Existing time requests are preserved; use `--time` explicitly to change the default or request automatic selection.
 
 #### Single-file mode (alternative)
 
@@ -782,7 +800,7 @@ If you prefer not to use a separate cluster file, you can edit the `__default__`
 
 ### Customizing SLURM Submission
 
-Job submission is handled by `bin/cluster_submit.py`, which dynamically builds the `sbatch` command. **Account (`-A`) and partition (`-p`) flags are automatically skipped** when their values are empty or set to `placeholder` — no need to edit any script.
+Job submission is handled by `bin/cluster_submit.py`, which dynamically builds the `sbatch` command. **Account (`-A`) and partition (`-p`) flags are omitted** for absent, null, empty, or `placeholder` configuration values. Entry scripts share one quoted submission template, so optional fields and paths containing spaces retain their argument positions.
 
 For per-rule customization (e.g., GPU for Helixer), add overrides to the rule's section in `cluster_annotate.yml` or `config_annotate.yml`:
 ```yaml
@@ -920,7 +938,9 @@ Run this only after both annotation and filter phases have completed successfull
 | Script | Purpose |
 |--------|---------|
 | `bin/generate_cluster_from_config.py` | Generate a standalone cluster-only YAML from `config_annotate.yml` |
-| `bin/cluster_submit.py` | SLURM job submission wrapper — dynamically builds `sbatch` command, skips `-A`/`-p` when account/partition are empty |
+| `bin/cluster_submit.py` | Build and validate the effective `sbatch` arguments before submission |
+| `bin/cluster_launch.py` / `bin/cluster_config.py` | Preserve YAML time text and scheduler-file precedence, retaining effective-file provenance |
+| `bin/prepare_liftoff.py` | Pair and namespace neighbor FASTA/GFF files and record their provenance |
 
 ---
 
