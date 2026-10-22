@@ -43,16 +43,16 @@ fi
 # --------------------------------------------------------------------------
 
 # Pipeline config: input paths, tool parameters, thread counts (read by Snakefiles)
-export SYLVAN_CONFIG="toydata/config/config_annotate.yml"
+export SYLVAN_CONFIG="${SYLVAN_CONFIG:-toydata/config/config_annotate.yml}"
 
 # Cluster config: SLURM account, partition, per-rule resources (read by Snakemake --cluster-config)
-export SYLVAN_CLUSTER_CONFIG="toydata/config/cluster_annotate.yml"
+export SYLVAN_CLUSTER_CONFIG="${SYLVAN_CLUSTER_CONFIG:-toydata/config/cluster_annotate.yml}"
 
 # Cluster submit command — account and partition are optional (skipped when empty or 'placeholder')
-CLUSTER_CMD="python3 bin/cluster_submit.py {cluster.nodes} {cluster.memory} {cluster.ncpus} {cluster.name} '{cluster.account}' '{cluster.partition}' '{cluster.time}' '{cluster.output}' '{cluster.error}' {cluster.extra_args}"
+source "$(dirname "${BASH_SOURCE[0]}")/cluster_entry.sh"
 
 # Rerun incomplete jobs with mtime trigger to detect changed files
-snakemake -p \
+sylvan_snakemake -p \
 	--rerun-incomplete \
 	--rerun-triggers mtime \
 	--use-singularity \

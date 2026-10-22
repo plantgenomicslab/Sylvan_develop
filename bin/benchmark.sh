@@ -17,7 +17,7 @@ export SLURM_TMPDIR="$TMPDIR"
 export SYLVAN_FILTER_CONFIG="${SYLVAN_FILTER_CONFIG:-config/config_filter.yml}"
 export SYLVAN_FILTER_CLUSTER_CONFIG="${SYLVAN_FILTER_CLUSTER_CONFIG:-$SYLVAN_FILTER_CONFIG}"
 
-CLUSTER_CMD="python3 bin/cluster_submit.py {cluster.nodes} {cluster.memory} {cluster.ncpus} {cluster.name} '{cluster.account}' '{cluster.partition}' '{cluster.time}' '{cluster.output}' '{cluster.error}' {cluster.extra_args}"
+source "$(dirname "${BASH_SOURCE[0]}")/cluster_entry.sh"
 
 for cfg in "$SYLVAN_FILTER_CONFIG" "$SYLVAN_FILTER_CLUSTER_CONFIG"; do
 	if [ ! -f "$cfg" ]; then
@@ -31,7 +31,7 @@ SINGULARITY_ARGS="${SYLVAN_SINGULARITY_ARGS:---nv -B /data/gpfs}"
 
 trap 'echo ""; echo "=== Log files: results/logs/{rule}_{wildcards}.err ==="; echo "Recent: ls -lt results/logs/*.err | head"' EXIT
 
-snakemake -p \
+sylvan_snakemake -p \
 	--rerun-incomplete \
 	--use-singularity \
 	--singularity-args "$SINGULARITY_ARGS" \

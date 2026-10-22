@@ -23,7 +23,7 @@ export SYLVAN_RUN_NAME="${SYLVAN_RUN_NAME:-$(basename "$(pwd)")}"
 SINGULARITY_ARGS="${SYLVAN_SINGULARITY_ARGS:---nv -B /data/gpfs}"
 
 # Cluster submit command — account and partition are optional (skipped when empty or 'placeholder')
-CLUSTER_CMD="python3 bin/cluster_submit.py {cluster.nodes} {cluster.memory} {cluster.ncpus} {cluster.name} '{cluster.account}' '{cluster.partition}' '{cluster.time}' '{cluster.output}' '{cluster.error}' {cluster.extra_args}"
+source "$(dirname "${BASH_SOURCE[0]}")/cluster_entry.sh"
 
 # Verify config files exist
 for cfg in "$SYLVAN_CONFIG" "$SYLVAN_CLUSTER_CONFIG"; do
@@ -37,7 +37,7 @@ done
 trap 'echo ""; echo "=== Log files: results/logs/{rule}_{wildcards}.err ==="; echo "Debug: cat results/logs/RULENAME_*.err"; echo "Recent: ls -lt results/logs/*.err | head"' EXIT
 
 #--rerun-triggers mtime \
-snakemake -p \
+sylvan_snakemake -p \
 	--rerun-incomplete \
 	--use-singularity \
 	--singularity-args "$SINGULARITY_ARGS" \

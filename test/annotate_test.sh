@@ -20,10 +20,12 @@ export TMPDIR="$(pwd)/results/TMP"
 export SLURM_TMPDIR="$TMPDIR"
 
 # Pipeline config
-export SYLVAN_CONFIG="test/config_annotate_test.yml"
+export SYLVAN_CONFIG="${SYLVAN_CONFIG:-test/config_annotate_test.yml}"
+
+export SYLVAN_CLUSTER_CONFIG="${SYLVAN_CLUSTER_CONFIG:-$SYLVAN_CONFIG}"
 
 # Cluster submit command
-CLUSTER_CMD="python3 bin/cluster_submit.py {cluster.nodes} {cluster.memory} {cluster.ncpus} {cluster.name} {cluster.account} {cluster.partition} {cluster.time} {cluster.output} {cluster.error} {cluster.extra_args}"
+source "$PROJECT_DIR/bin/cluster_entry.sh"
 
 # Print log location on exit
 trap 'echo ""; echo "=== Log files: results/logs/{rule}_{wildcards}.err ==="; echo "Recent: ls -lt results/logs/*.err | head"' EXIT
@@ -40,11 +42,11 @@ for arg in "$@"; do
 done
 
 echo "=== Config validation ==="
-python3 -c "import yaml; c=yaml.safe_load(open('$SYLVAN_CONFIG')); print('Config OK:', list(c.keys()))"
+python3 -c 'import sys, yaml; c=yaml.safe_load(open(sys.argv[1])); print("Config OK:", list(c.keys()))' "$SYLVAN_CONFIG"
 
 echo ""
 echo "=== Snakemake ${RUN_MODE:-submission} ==="
-snakemake -p \
+sylvan_snakemake -p \
 	$RUN_MODE \
 	--rerun-incomplete \
 	--use-singularity \
@@ -52,7 +54,7 @@ snakemake -p \
 	--keep-going \
 	--keep-incomplete \
 	--stats test/annotation_runtime_stats.json \
-	--cluster-config "$SYLVAN_CONFIG" \
+	--cluster-config "$SYLVAN_CLUSTER_CONFIG" \
 	--snakefile bin/Snakefile_annotate \
 	--groups Sam2Transfrag=group0 --group-components group0=100 \
 	--max-jobs-per-second 50 \
