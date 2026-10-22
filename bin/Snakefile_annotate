@@ -6,6 +6,11 @@ from rich.console import Console
 from rich.logging import RichHandler
 from pathlib import Path
 
+# Import from the Snakefile location even when Snakemake uses another --directory.
+sys.path.insert(0, os.path.dirname(workflow.snakefile))
+from prepare_liftoff import (FASTA_EXTENSIONS, GFF_EXTENSIONS, find_references,
+                             prepare_references as prepare_neighbor_references)
+
 def run_in_container(cmd_str, env_name="genepred", stderr_file=None):
     """Run a command inside the singularity container (for run: blocks).
 
@@ -119,7 +124,7 @@ for input in config_dict["Input"]:
 	elif input == "liftoff":
 		input_value = config_dict["Input"][input]
 		if input_value is not None:
-			for dir in input_value:
+			for dir in ("neighbor_fasta", "neighbor_gff"):
 				if not os.path.exists(config_dict["Input"][input][dir]):
 					logging.error(f"Could not find {config_dict['Input'][input][dir]}! Check Input/{input}/{dir} in config.yml ...")
 					sys.exit()
@@ -138,7 +143,7 @@ for input in config_dict["Input"]:
 						sys.exit()
 	elif input in {"prefix", "RM_species", "augustus_species", "use_augustus",
 	               "augustus_start_from", "num_evm_files", "helixer_model_dir", "helixer_subseq",
-	               "helixer_device", "singularity", "geta_conf"}:
+	               "helixer_device", "singularity", "geta_conf", "allow_missing_gmap_exon"}:
 		continue
 	elif input == "evm_weights":
 		if not os.path.exists(config_dict["Input"][input]):
@@ -232,29 +237,9 @@ if not helixer_model_dir or helixer_model_dir == "placeholder":
 neighbor_gff = config_dict["Input"]["liftoff"]["neighbor_gff"]
 neighbor_fasta = config_dict["Input"]["liftoff"]["neighbor_fasta"]
 
-def _find_liftoff_refs(path, extensions):
-	"""Mirror the `find <path> -regex ...` used inside prepare_liftoff so Snakemake
-	tracks the neighbour reference files as rule inputs (issue #3). Without this the
-	rule declares no input:, so replacing a corrupted neighbour reference in place can
-	never re-fire the rule (--rerun-triggers mtime has nothing to compare against; the
-	params path string is unchanged). Returns a sorted list of files under `path`
-	(recursively, matching a directory the same way `find` does) whose extension is in
-	`extensions`; falls back to a single file when `path` itself is a file."""
-	exts = tuple("." + e for e in extensions)
-	matches = []
-	if os.path.isdir(path):
-		for root, _dirs, files in os.walk(path):
-			for fn in files:
-				if fn.endswith(exts):
-					matches.append(os.path.join(root, fn))
-	elif os.path.isfile(path) and path.endswith(exts):
-		matches.append(path)
-	return sorted(matches)
-
-# Extension sets mirror the find regexes in prepare_liftoff exactly:
-#   fasta: .fa|.fasta|.fna|.fas|.fsa|.seq   gff: .gff|.gff3
-liftoff_neighbor_fasta_refs = _find_liftoff_refs(neighbor_fasta, ["fa", "fasta", "fna", "fas", "fsa", "seq"])
-liftoff_neighbor_gff_refs = _find_liftoff_refs(neighbor_gff, ["gff", "gff3"])
+# Discovery and preparation share suffixes and consume the same declared inventory.
+liftoff_neighbor_fasta_refs = find_references(neighbor_fasta, FASTA_EXTENSIONS)
+liftoff_neighbor_gff_refs = find_references(neighbor_gff, GFF_EXTENSIONS)
 
 augustus_species = config_dict["Input"]["geta"]["augustus_species"]
 geta_RMspecies = config_dict["Input"]["geta"]["RM_species"]
@@ -2951,42 +2936,22 @@ rule helixer:
 		'''
 
 rule prepare_liftoff:
-	# input: the neighbour reference GFFs/FASTAs are declared here (issue #3) so
-	# Snakemake tracks their mtimes and a replaced/repaired reference re-fires the
-	# rule. Before this they arrived only as `params` (a path string), so once
-	# combined.{fasta,gff3} existed the rule could never re-run. The rule body still
-	# uses params.neighbor_* (the directory paths) for its `find`; input.* is for the
-	# DAG only. Empty lists (no refs found) preserve the old no-input behaviour.
+	# These exact files are prepared; changes to references remain visible to the DAG.
 	input:
 		neighbor_fasta = liftoff_neighbor_fasta_refs,
 		neighbor_gff = liftoff_neighbor_gff_refs
 	output:
-		f"{RESULTS_DIR}LIFTOVER/LiftOff/combined.fasta",
-		f"{RESULTS_DIR}LIFTOVER/LiftOff/combined.gff3"
+		fasta = f"{RESULTS_DIR}LIFTOVER/LiftOff/combined.fasta",
+		gff = f"{RESULTS_DIR}LIFTOVER/LiftOff/combined.gff3",
+		pairs = f"{RESULTS_DIR}LIFTOVER/LiftOff/combined.pairs.tsv"
 	params:
-		neighbor_fasta = config_dict["Input"]["liftoff"]["neighbor_fasta"],
-		neighbor_gff = config_dict["Input"]["liftoff"]["neighbor_gff"],
-		results_dir = RESULTS_DIR
+		pairs = lambda wc: config_dict["Input"]["liftoff"].get("pairs"),
+		# Imported helper changes must also invalidate already prepared references.
+		helper_sha256 = __import__("hashlib").sha256(Path(workflow.snakefile).with_name("prepare_liftoff.py").read_bytes()).hexdigest()
 	run:
-		# TODO: check this... may need better heuristics for making chromosome names unique?
-		# TODO: write it into a python script and ensure unique chromosome names using hashes?
-
-		# Create output directory
-		shell("mkdir -p {params.results_dir}LIFTOVER/LiftOff")
-
-		# Uniquify chromosome names and combine everything
-		shell("if test -f {params.results_dir}LIFTOVER/LiftOff/combined.fasta; then rm {params.results_dir}LIFTOVER/LiftOff/combined.fasta;fi")
-		shell('for fasta in $(find {params.neighbor_fasta} -regextype sed -regex ".*\\.\\(fa\\|fasta\\|fna\\|fas\\|fsa\\|seq\\)$"); do \
-			bn=$(basename $fasta); \
-			tri=${{bn:0:3}}; \
-			cat $fasta | sed "s/^>/>${{tri}}/" >> {params.results_dir}LIFTOVER/LiftOff/combined.fasta; \
-			done')
-		shell("if test -f {params.results_dir}LIFTOVER/LiftOff/combined.gff3;then rm {params.results_dir}LIFTOVER/LiftOff/combined.gff3;fi")
-		shell('for gff in $(find {params.neighbor_gff} -regextype sed -regex ".*\\.gff3\\{{0,1\\}}$"); do \
-			bn=$(basename $gff); \
-			tri=${{bn:0:3}}; \
-			cat $gff | sed "s/^\\([a-zA-Z0-9]\\)/${{tri}}\\1/" | sed "/^#/d" >> {params.results_dir}LIFTOVER/LiftOff/combined.gff3; \
-			done')
+		prepare_neighbor_references(input.neighbor_fasta, input.neighbor_gff,
+		                            output.fasta, output.gff, output.pairs,
+		                            pairs=params.pairs)
 
 rule liftoff:
 	input:
@@ -2998,14 +2963,14 @@ rule liftoff:
 	params:
 		results_dir = RESULTS_DIR
 	shell: "micromamba activate genepred && liftoff \
-				{input.genome_fasta} {input.combined_fasta} -g {input.combined_gff}  \
+				{input.genome_fasta:q} {input.combined_fasta:q} -g {input.combined_gff:q}  \
 				-p {threads} \
 				-flank 0.4 \
 				-copies \
 				-cds \
-				-dir {params.results_dir}LIFTOVER/LiftOff/intermediate_files \
-				-u {params.results_dir}LIFTOVER/LiftOff/unmapped_features.txt \
-				-o {output}"
+				-dir {params.results_dir:q}LIFTOVER/LiftOff/intermediate_files \
+				-u {params.results_dir:q}LIFTOVER/LiftOff/unmapped_features.txt \
+				-o {output:q}"
 
 ########## Genome_Annotation_Post ####################
 
@@ -3028,7 +2993,7 @@ rule gmapPrep:
 	shell:
 		"""
 		micromamba activate annotation
-		mkdir -p {params.results_dir}TRANSCRIPT/Gmap
+		mkdir -p {params.results_dir:q}TRANSCRIPT/Gmap
 		# Nothing below may fall back to a bare `touch`. An empty liftoffExon.fasta still lets
 		# gmapPrep exit 0, so Snakemake records the rule complete and its output is newer than
 		# its input: neither --rerun-incomplete nor --rerun-triggers mtime will ever redo it.
@@ -3047,7 +3012,7 @@ rule gmapPrep:
 		# source column shifts the type field, so `awk '$3=="exon"'` under-counts silently.
 		# grep exits 1 when there is simply no match; anything above that is a real error.
 		grep_rc=0
-		grep -P '\texon\t' {input.combined_gff} > {params.results_dir}TRANSCRIPT/Gmap/liftoffExon.gff3 || grep_rc=$?
+		grep -P '\texon\t' {input.combined_gff:q} > {params.results_dir:q}TRANSCRIPT/Gmap/liftoffExon.gff3 || grep_rc=$?
 		if [ "$grep_rc" -gt 1 ]; then
 			echo "gmapPrep: grep exited $grep_rc reading {input.combined_gff}" >&2
 			exit 1
@@ -3055,7 +3020,7 @@ rule gmapPrep:
 
 		# Failure 0: combined.gff3 is empty or absent. prepare_liftoff concatenates the
 		# neighbour GFFs into it, so an empty one means that rule produced nothing.
-		if [ ! -s {input.combined_gff} ]; then
+		if [ ! -s {input.combined_gff:q} ]; then
 			echo "gmapPrep: {input.combined_gff} is empty -- prepare_liftoff produced nothing" >&2
 			exit 1
 		fi
@@ -3070,14 +3035,14 @@ rule gmapPrep:
 		# `Input.allow_missing_gmap_exon: true` turns this into a deliberate, recorded
 		# exclusion instead of an error. It stays off by default: an empty track that
 		# nobody asked for is exactly the failure this rule now exists to prevent.
-		if [ ! -s {params.results_dir}TRANSCRIPT/Gmap/liftoffExon.gff3 ]; then
+		if [ ! -s {params.results_dir:q}TRANSCRIPT/Gmap/liftoffExon.gff3 ]; then
 			if [ "{params.allow_no_exon}" = "1" ]; then
 				echo "gmapPrep: WARNING -- {input.combined_gff} has no 'exon' features." >&2
 				echo "          Proceeding with an EMPTY GMAP exon track because" >&2
 				echo "          Input.allow_missing_gmap_exon is set. Remove 'TRANSCRIPT gmap.exon_match'" >&2
 				echo "          from the EVM weights so the empty track contributes nothing." >&2
-				: > {params.results_dir}TRANSCRIPT/Gmap/liftoffExon.fasta
-				gmap_build -D {params.results_dir}TRANSCRIPT/Gmap -d DB {input.genome_fasta}
+				: > {params.results_dir:q}TRANSCRIPT/Gmap/liftoffExon.fasta
+				gmap_build -D {params.results_dir:q}TRANSCRIPT/Gmap -d DB {input.genome_fasta:q}
 				exit 0
 			fi
 			echo "gmapPrep: {input.combined_gff} has no 'exon' features, so GMAP has nothing to align." >&2
@@ -3098,16 +3063,18 @@ rule gmapPrep:
 		#
 		# By here the BED is known non-empty, so an empty FASTA is always an error. There is
 		# no `else` branch: every path out of this rule is a real FASTA or a loud failure.
-		/opt/envs/alignment/bin/bedtools getfasta -fi {input.combined_fasta} -fo {params.results_dir}TRANSCRIPT/Gmap/liftoffExon.fasta -bed {params.results_dir}TRANSCRIPT/Gmap/liftoffExon.gff3
-		if [ ! -s {params.results_dir}TRANSCRIPT/Gmap/liftoffExon.fasta ]; then
+		/opt/envs/alignment/bin/bedtools getfasta -fi {input.combined_fasta:q} -fo {params.results_dir:q}TRANSCRIPT/Gmap/liftoffExon.fasta -bed {params.results_dir:q}TRANSCRIPT/Gmap/liftoffExon.gff3
+		if [ ! -s {params.results_dir:q}TRANSCRIPT/Gmap/liftoffExon.fasta ]; then
 			echo "gmapPrep: bedtools getfasta produced an empty liftoffExon.fasta from a non-empty BED" >&2
 			exit 1
 		fi
-		gmap_build -D {params.results_dir}TRANSCRIPT/Gmap -d DB {input.genome_fasta}
+		gmap_build -D {params.results_dir:q}TRANSCRIPT/Gmap -d DB {input.genome_fasta:q}
 		"""
 
 rule gmapExon:
-	input: f"{RESULTS_DIR}TRANSCRIPT/Gmap/DB/DB.chromosome"
+	input:
+		chromosome = f"{RESULTS_DIR}TRANSCRIPT/Gmap/DB/DB.chromosome",
+		exons = f"{RESULTS_DIR}TRANSCRIPT/Gmap/liftoffExon.fasta"
 	output: f"{RESULTS_DIR}TRANSCRIPT/Gmap/gmapExon.gff3"
 	threads: config_dict["gmapExon"]["threads"]
 	params: results_dir = RESULTS_DIR
@@ -3117,14 +3084,14 @@ rule gmapExon:
 		# GMAP ships two binaries and each refuses the other's size class: `gmapl`
 		# only takes genomes >= 2^32 bp, `gmap` only takes smaller ones. Pick from
 		# the genome length, summed from column 3 of the GMAP index's chromosome file.
-		GENOME_BP=$(awk '{{s+=$3}} END{{printf "%.0f", s+0}}' {input})
+		GENOME_BP=$(awk '{{s+=$3}} END{{printf "%.0f", s+0}}' {input.chromosome:q})
 		if [ "$GENOME_BP" -ge 4294967296 ]; then GMAP_BIN=gmapl; else GMAP_BIN=gmap; fi
-		$GMAP_BIN -D {params.results_dir}TRANSCRIPT/Gmap -d DB -t {threads}  --min-identity=0.7 \
+		$GMAP_BIN -D {params.results_dir:q}TRANSCRIPT/Gmap -d DB -t {threads}  --min-identity=0.7 \
 		--min-trimmed-coverage=0.85 --cross-species \
 		--max-intronlength-middle=0  \
 		--max-intronlength-ends=0 --mapexons -p 1 -f 3 \
 		-n 2 --gff3-cds=genomic \
-		{params.results_dir}TRANSCRIPT/Gmap/liftoffExon.fasta 1> {params.results_dir}TRANSCRIPT/Gmap/gmapExon.gff3
+		{input.exons:q} 1> {output:q}
 		"""
 
 rule bam2Fasta:
@@ -3468,11 +3435,11 @@ rule convertToEvmFormat:
 		> {params.results_dir}EVM/genewise_protAln_evm.gff
 
 		bin/gff_to_evm.py \
-		{params.results_dir}TRANSCRIPT/Gmap/gmapExon.gff3 \
+		{input.gmap:q} \
 		--source gmap.exon_match \
 		--type nucleotide_to_nucleotide_match \
 		--feature \\* \
-		> {params.results_dir}EVM/gmap_exonAln_evm.gff
+		> {output.gmap:q}
 		
 		## Other - genewise
 		bin/gff_to_evm.py \
@@ -3483,9 +3450,9 @@ rule convertToEvmFormat:
 		
 		## Other - Liftoff
 		bin/gff_to_evm.py \
-		{params.results_dir}LIFTOVER/LiftOff/liftoff.gff3 \
+		{input.liftoff:q} \
 		--feature '.*' \
-		> {params.results_dir}EVM/liftoff_evm.gff3
+		> {output.liftoff:q}
 
 		bin/gff_to_evm.py \
 		{input.miniprot} \
