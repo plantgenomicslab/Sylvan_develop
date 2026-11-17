@@ -90,3 +90,5 @@ jobs:
         run: |
           python -B bin/test_merge_pasa_phase.py
           python -B bin/test_merge_pasa_evm_junction.py
+      - name: Container preflight
+        run: python -B bin/test_check_container.py

@@ -77,19 +77,49 @@ git lfs install   # one-time: registers LFS filters in ~/.gitconfig
 git clone https://github.com/plantgenomicslab/Sylvan.git
 cd Sylvan
 git lfs pull      # ensure toy-data LFS files are downloaded (not just pointers)
-# Build the image for this source revision (requires configured fakeroot support)
+```
+
+#### Container image
+
+The prebuilt image for this release is archived on Zenodo:
+[[USER-INPUT G1: Zenodo DOI/record URL]]. Download `sylvan.sif` from that record into
+`singularity/` and verify it before use:
+
+```bash
+sha256sum singularity/sylvan.sif
+# must equal the SHA-256 published on the Zenodo record:
+# [[USER-INPUT G1: deposited image SHA-256]]
+```
+
+The image validated end to end for this revision has SHA-256
+`6a164247b1b96d1994db15bd9f2dd9ae12a49856850701063fc1f22df204ad14`
+(11,053,973,504 bytes); confirm that the deposited file matches it.
+Alternatively, build the image from this checkout (requires configured fakeroot support):
+
+```bash
 singularity build --fakeroot singularity/sylvan.sif singularity/Sylvan.def
 ```
 
+Check that Helixer can start before launching a run (seconds; no TensorFlow import):
+
+```bash
+singularity exec singularity/sylvan.sif /opt/envs/helixer/bin/python -c 'import yaml, sklearn, scipy, sqlite3'
+singularity exec singularity/sylvan.sif micromamba run -p /opt/envs/helixer Helixer.py --help
+```
+
+The annotation workflow runs the same check (`bin/check_container.sh`) at start and stops
+with a message naming the required image if it fails; set `SYLVAN_SKIP_CONTAINER_CHECK=1`
+to skip it. Images built between 2026-07-08 and 2026-08-27 ship Helixer v0.3.7 without
+PyYAML, scikit-learn and scipy, so Helixer dies at startup (`No module named 'yaml'`);
+do not use them.
+
 #### Image and code must be in lockstep
 
-The historical public image is available at
-`library://plantgenomicslab/sylvan/sylvan.sif:latest` (the older `wyim` namespace is incorrect).
-The inspected immutable image
-`sha256.b294eb51778bc2f8b47d0ceb08282f2bb67351f09d3c8d7fbeb4ef8fa026ad32`
-was built on 2024-05-02 and lacks the micromamba layout required by the current
-workflow. It is not a compatible prebuilt image for this revision. Build from
-the checked-out definition above until a matching tested image is published.
+The former Sylabs Cloud Library location (`library://...`) is no longer available.
+An older image distributed there
+(`sha256.b294eb51778bc2f8b47d0ceb08282f2bb67351f09d3c8d7fbeb4ef8fa026ad32`,
+built 2024-05-02) lacks the micromamba layout required by the current
+workflow and is not compatible with this release.
 
 
 `bin/` is bind-mounted into the container, so Python and Snakefile changes take effect
@@ -107,17 +137,8 @@ To check which def an image was built from, without needing `singularity` at all
 head -c 1000000 image.sif | grep -a mamba_hook   # 0 hits => predates v2.1.0
 ```
 
-PGL / Pronghorn users should link to the published image rather than copy 10 GB:
-
-```bash
-ln -sfn /data/gpfs/assoc/pgl/singularity/Sylvan/Sylvan_20260708b.sif singularity/sylvan.sif
-
-# The .sha256 sidecar names the image relatively, so verify from its own directory.
-( cd /data/gpfs/assoc/pgl/singularity/Sylvan && sha256sum -c Sylvan_20260708b.sif.sha256 )
-```
-
-> The same directory also holds a `sylvan.sif` from 2025-05-05. It is **not** the v2.1.0
-> image. Always reference the dated filename.
+On a shared cluster, link one verified copy of the image into each run's `singularity/`
+directory rather than copying 10 GB per run.
 
 ### Build from source (optional)
 
@@ -509,7 +530,7 @@ Compare annotation quality across all pipeline stages using BUSCO and OMArk:
 
 This benchmarks each GFF3 listed in `Benchmark.gff3_files` by extracting proteins and running BUSCO protein-mode (and optionally OMArk). Results are saved to `results/BENCHMARK/benchmark_summary.tsv`.
 
-**OMArk setup (optional):** OMArk requires the OMAmer database (`LUCA.h5`, ~6 GB), which is **not** bundled in the container to keep the image under the Sylabs Cloud 10 GB limit. Download it into your project root:
+**OMArk setup (optional):** OMArk requires the OMAmer database (`LUCA.h5`, ~6 GB), which is **not** bundled in the container to limit image size. Download it into your project root:
 
 ```bash
 cd Sylvan/                    # project root

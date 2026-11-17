@@ -350,6 +350,16 @@ onstart:
 	print(f"Log directory: {RESULTS_DIR}logs/")
 	print("Log file pattern: {rule}_{wildcards}.out / {rule}_{wildcards}.err")
 	print("="*80 + "\n")
+	# Fail now, not hours later in the helixer rule, when the image cannot start
+	# Helixer (images built 2026-07-08..2026-08-27) or predates the v2.1.0 layout.
+	# Seconds, no TensorFlow import; skip with SYLVAN_SKIP_CONTAINER_CHECK=1.
+	_sif = config_dict.get("Input", {}).get("singularity", "") or config_dict.get("Singularity", "")
+	if workflow.use_singularity and _sif:
+		import shlex
+		from snakemake.exceptions import WorkflowError
+		_check = os.path.join(os.path.dirname(workflow.snakefile), "check_container.sh")
+		if _subprocess.call(["bash", _check, _sif] + shlex.split(workflow.singularity_args or "")) != 0:
+			raise WorkflowError(f"Container check failed for {_sif}; see the message above.")
 
 onerror:
 	print("\n" + "="*80)

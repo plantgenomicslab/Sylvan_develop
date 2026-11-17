@@ -74,11 +74,15 @@ git lfs install
 
 ### Sylvan Container
 
+The former Sylabs Cloud Library location (`library://...`) is no longer available,
+so the former `singularity pull` commands do not work. Download the release image from the
+Zenodo record and verify its SHA-256, or build it from `singularity/Sylvan.def`;
+see "Container image" in the [README](README.md#container-image).
+
 ```bash
-# latest = v4 (GPU-capable TensorFlow, ~16 GB)
-singularity pull --arch amd64 sylvan.sif library://wyim/sylvan/sylvan:latest
-# Or v3 (CPU-only TensorFlow, ~8 GB):
-# singularity pull --arch amd64 sylvan.sif library://wyim/sylvan/sylvan:v3
+singularity build --fakeroot singularity/sylvan.sif singularity/Sylvan.def
+# Helixer self-check (seconds; images built 2026-07-08 to 2026-08-27 fail it)
+singularity exec singularity/sylvan.sif /opt/envs/helixer/bin/python -c 'import yaml, sklearn, scipy, sqlite3'
 ```
 
 ### EDTA Container (for repeat library)
