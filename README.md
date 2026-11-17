@@ -81,19 +81,15 @@ git lfs pull      # ensure toy-data LFS files are downloaded (not just pointers)
 
 #### Container image
 
-The prebuilt image for this release is archived on Zenodo:
-[[USER-INPUT G1: Zenodo DOI/record URL]]. Download `sylvan.sif` from that record into
-`singularity/` and verify it before use:
+The image validated end to end with this code is archived on Zenodo as
+`Sylvan_revision_trf.sif` in the record [doi:10.5281/zenodo.23933880](https://doi.org/10.5281/zenodo.23933880)
+(11,053,973,504 bytes). Download it into `singularity/` as `sylvan.sif` and verify it before use:
 
 ```bash
 sha256sum singularity/sylvan.sif
-# must equal the SHA-256 published on the Zenodo record:
-# [[USER-INPUT G1: deposited image SHA-256]]
+# must print 6a164247b1b96d1994db15bd9f2dd9ae12a49856850701063fc1f22df204ad14
 ```
 
-The image validated end to end for this revision has SHA-256
-`6a164247b1b96d1994db15bd9f2dd9ae12a49856850701063fc1f22df204ad14`
-(11,053,973,504 bytes); confirm that the deposited file matches it.
 Alternatively, build the image from this checkout (requires configured fakeroot support):
 
 ```bash

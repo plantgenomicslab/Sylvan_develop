@@ -76,7 +76,8 @@ git lfs install
 
 The former Sylabs Cloud Library location (`library://...`) is no longer available,
 so the former `singularity pull` commands do not work. Download the release image from the
-Zenodo record and verify its SHA-256, or build it from `singularity/Sylvan.def`;
+Zenodo record ([doi:10.5281/zenodo.23933880](https://doi.org/10.5281/zenodo.23933880), file
+`Sylvan_revision_trf.sif`) and verify its SHA-256, or build it from `singularity/Sylvan.def`;
 see "Container image" in the [README](README.md#container-image).
 
 ```bash
